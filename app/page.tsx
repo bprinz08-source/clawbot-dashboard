@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import type { BuilderRecord } from '@/lib/builder-schema';
 import { AI_DRAFT_FIELDS, type AiDraftField } from '@/lib/builder-ai-shared';
 import {
@@ -107,6 +107,20 @@ type JobHuntDetailResponse = {
   success: boolean;
   error?: string;
   opportunity?: JobHuntRole;
+};
+
+type JobHuntDiscoveryResponse = {
+  success: boolean;
+  error?: string;
+  message?: string;
+  run?: {
+    selectedCount: number;
+    appendedCount: number | null;
+    updatedCount: number | null;
+    selectedIds: string[];
+    watchlistSelectedCount: number;
+    jobsFetched: number;
+  };
 };
 
 type SupportEditorState = SupportTicketDraftPatch;
@@ -215,6 +229,237 @@ const JOB_HUNT_ACTIVE_PIPELINE_STATUSES: JobHuntStatus[] = [
 
 function normalizeFilterValue(value: string) {
   return value.trim().toLowerCase();
+}
+
+function normalizeJobHuntDedupeValue(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getJobHuntRoleTimestamp(role: JobHuntRole) {
+  const parsed = Date.parse(role.updated_at || role.created_at || '');
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getJobHuntRoleStatusRank(role: JobHuntRole) {
+  if (role.status === 'Rejected' || role.status === 'Archived') {
+    return 0;
+  }
+
+  return 1;
+}
+
+function buildJobHuntRoleDedupeKey(role: JobHuntRole) {
+  const companyName = normalizeJobHuntDedupeValue(role.company_name);
+  const roleTitle = normalizeJobHuntDedupeValue(role.role_title);
+  const location = normalizeJobHuntDedupeValue(role.location);
+  const postingUrl = normalizeJobHuntDedupeValue(role.posting_url);
+
+  return [companyName, roleTitle, location, postingUrl].join('|');
+}
+
+function choosePreferredJobHuntRole(currentRole: JobHuntRole, nextRole: JobHuntRole) {
+  const currentStatusRank = getJobHuntRoleStatusRank(currentRole);
+  const nextStatusRank = getJobHuntRoleStatusRank(nextRole);
+
+  if (currentStatusRank !== nextStatusRank) {
+    return nextStatusRank > currentStatusRank ? nextRole : currentRole;
+  }
+
+  const currentTimestamp = getJobHuntRoleTimestamp(currentRole);
+  const nextTimestamp = getJobHuntRoleTimestamp(nextRole);
+
+  if (currentTimestamp !== nextTimestamp) {
+    return nextTimestamp > currentTimestamp ? nextRole : currentRole;
+  }
+
+  const currentScore = scoreJobRole(currentRole);
+  const nextScore = scoreJobRole(nextRole);
+
+  if (currentScore !== nextScore) {
+    return nextScore > currentScore ? nextRole : currentRole;
+  }
+
+  return nextRole.opportunity_id.localeCompare(currentRole.opportunity_id) < 0
+    ? nextRole
+    : currentRole;
+}
+
+function dedupeJobHuntRoles(roles: JobHuntRole[]) {
+  const dedupedRoles = new Map<string, JobHuntRole>();
+
+  for (const role of roles) {
+    const dedupeKey = buildJobHuntRoleDedupeKey(role);
+    const existingRole = dedupedRoles.get(dedupeKey);
+
+    if (!existingRole) {
+      dedupedRoles.set(dedupeKey, role);
+      continue;
+    }
+
+    dedupedRoles.set(dedupeKey, choosePreferredJobHuntRole(existingRole, role));
+  }
+
+  return Array.from(dedupedRoles.values());
+}
+
+const JOB_HUNT_TERRITORY_SIGNAL_PATTERN =
+  /\b(remote|us|usa|united states|washington|seattle|pacific|mountain|central|eastern|timezone|time zone|territory|region|market|oh|ohio|ks|kansas|ne|nebraska|fl|florida|wa)\b/;
+
+function looksLikeJobHuntTerritoryQualifier(value: string) {
+  const normalizedValue = normalizeJobHuntDedupeValue(value);
+
+  if (!normalizedValue) {
+    return false;
+  }
+
+  return JOB_HUNT_TERRITORY_SIGNAL_PATTERN.test(normalizedValue);
+}
+
+function stripJobHuntRoleTerritoryQualifier(roleTitle: string) {
+  let nextTitle = roleTitle.trim();
+
+  while (true) {
+    const trimmedTitle = nextTitle.trim();
+    let updatedTitle = trimmedTitle;
+
+    const trailingParentheticalMatch = /^(.*?)(?:\s*\(([^()]+)\))$/.exec(trimmedTitle);
+
+    if (
+      trailingParentheticalMatch &&
+      looksLikeJobHuntTerritoryQualifier(trailingParentheticalMatch[2])
+    ) {
+      updatedTitle = trailingParentheticalMatch[1].trim();
+    } else {
+      const trailingQualifierMatch = /^(.*?)(?:\s*[-,|:]\s*|\s+)([^-|:,()]+)$/.exec(trimmedTitle);
+
+      if (
+        trailingQualifierMatch &&
+        looksLikeJobHuntTerritoryQualifier(trailingQualifierMatch[2])
+      ) {
+        updatedTitle = trailingQualifierMatch[1].trim();
+      }
+    }
+
+    if (updatedTitle === trimmedTitle || !updatedTitle) {
+      return trimmedTitle;
+    }
+
+    nextTitle = updatedTitle;
+  }
+}
+
+function buildJobHuntRoleFamilyKey(role: JobHuntRole) {
+  return [
+    normalizeJobHuntDedupeValue(role.company_name),
+    normalizeJobHuntDedupeValue(stripJobHuntRoleTerritoryQualifier(role.role_title))
+  ].join('|');
+}
+
+function getJobHuntVariantRelevanceScore(role: JobHuntRole) {
+  const normalizedLocation = normalizeJobHuntDedupeValue(role.location);
+  const normalizedWorkModel = normalizeJobHuntDedupeValue(role.work_model);
+  const normalizedTitle = normalizeJobHuntDedupeValue(role.role_title);
+  const combinedText = [normalizedLocation, normalizedWorkModel, normalizedTitle].join(' ');
+  const isRemote = combinedText.includes('remote');
+  const isRemoteUs =
+    /\b(remote us|us remote|remote usa|usa remote|remote united states|united states remote)\b/.test(
+      combinedText
+    ) ||
+    (isRemote && /\b(us|usa|united states)\b/.test(combinedText));
+  const isWashingtonAligned = /\b(seattle|washington|wa)\b/.test(combinedText);
+  const isRestrictedRemote =
+    /\b(est|eastern|cst|central|mst|mountain|pst|pacific|oh|ohio|ks|kansas|ne|nebraska|fl|florida)\b/.test(
+      combinedText
+    );
+
+  if (isRemoteUs) {
+    return 4;
+  }
+
+  if (isWashingtonAligned) {
+    return 3;
+  }
+
+  if (isRemote && !isRestrictedRemote) {
+    return 2;
+  }
+
+  if (isRemote) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function isTerritorySlicedJobHuntVariant(role: JobHuntRole) {
+  return (
+    looksLikeJobHuntTerritoryQualifier(role.location) ||
+    looksLikeJobHuntTerritoryQualifier(role.work_model) ||
+    stripJobHuntRoleTerritoryQualifier(role.role_title) !== role.role_title.trim()
+  );
+}
+
+function choosePreferredJobHuntFamilyVariant(currentRole: JobHuntRole, nextRole: JobHuntRole) {
+  const currentStatusRank = getJobHuntRoleStatusRank(currentRole);
+  const nextStatusRank = getJobHuntRoleStatusRank(nextRole);
+
+  if (currentStatusRank !== nextStatusRank) {
+    return nextStatusRank > currentStatusRank ? nextRole : currentRole;
+  }
+
+  const currentVariantScore = getJobHuntVariantRelevanceScore(currentRole);
+  const nextVariantScore = getJobHuntVariantRelevanceScore(nextRole);
+
+  if (currentVariantScore !== nextVariantScore) {
+    return nextVariantScore > currentVariantScore ? nextRole : currentRole;
+  }
+
+  return choosePreferredJobHuntRole(currentRole, nextRole);
+}
+
+function collapseTerritorySlicedJobHuntRoleFamilies(roles: JobHuntRole[]) {
+  const rolesByFamily = new Map<string, JobHuntRole[]>();
+
+  for (const role of roles) {
+    const familyKey = buildJobHuntRoleFamilyKey(role);
+    const existingRoles = rolesByFamily.get(familyKey) || [];
+    existingRoles.push(role);
+    rolesByFamily.set(familyKey, existingRoles);
+  }
+
+  const normalizedRoles: JobHuntRole[] = [];
+
+  for (const familyRoles of rolesByFamily.values()) {
+    if (familyRoles.length === 1) {
+      normalizedRoles.push(familyRoles[0]);
+      continue;
+    }
+
+    const hasTerritoryVariants = familyRoles.some(isTerritorySlicedJobHuntVariant);
+
+    if (!hasTerritoryVariants) {
+      normalizedRoles.push(...familyRoles);
+      continue;
+    }
+
+    let preferredRole = familyRoles[0];
+
+    for (let index = 1; index < familyRoles.length; index += 1) {
+      preferredRole = choosePreferredJobHuntFamilyVariant(
+        preferredRole,
+        familyRoles[index]
+      );
+    }
+
+    normalizedRoles.push(preferredRole);
+  }
+
+  return normalizedRoles;
 }
 
 function createEmptyFormState() {
@@ -631,6 +876,9 @@ export default function HomePage() {
   );
   const [jobDirty, setJobDirty] = useState(false);
   const [jobSaveSuccess, setJobSaveSuccess] = useState('');
+  const [jobDiscoveryError, setJobDiscoveryError] = useState('');
+  const [jobDiscoverySuccess, setJobDiscoverySuccess] = useState('');
+  const [isJobDiscoveryRunning, setIsJobDiscoveryRunning] = useState(false);
   const [todayIsoDate, setTodayIsoDate] = useState('');
 
   const deferredSearchTerm = useDeferredValue(searchTerm);
@@ -910,10 +1158,8 @@ export default function HomePage() {
     };
   }, [selectedSupportTicketId]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadJobHuntRoles() {
+  const loadJobHuntRoles = useCallback(
+    async (options?: { signal?: AbortSignal; preferredRoleId?: string }) => {
       setIsJobLoading(true);
       setJobLoadError('');
 
@@ -921,7 +1167,7 @@ export default function HomePage() {
         const response = await fetch('/api/job-hunt/opportunities', {
           method: 'GET',
           cache: 'no-store',
-          signal: controller.signal
+          signal: options?.signal
         });
 
         const payload = (await response.json()) as JobHuntQueueResponse;
@@ -930,13 +1176,23 @@ export default function HomePage() {
           throw new Error(payload.error || 'Failed to load job opportunities.');
         }
 
-        setJobRoles(payload.opportunities);
-        setJobSource(payload.source || '');
-        setSelectedJobRoleId((currentId) =>
-          currentId || payload.opportunities?.[0]?.opportunity_id || ''
+        const dedupedRoles = dedupeJobHuntRoles(payload.opportunities);
+        const normalizedRoles = collapseTerritorySlicedJobHuntRoleFamilies(
+          dedupedRoles
         );
+
+        setJobRoles(normalizedRoles);
+        setJobSource(payload.source || '');
+        setSelectedJobRoleId((currentId) => {
+          const preferredRoleId = options?.preferredRoleId || currentId;
+          const nextSelectedRole = normalizedRoles.find(
+            (role) => role.opportunity_id === preferredRoleId
+          );
+
+          return nextSelectedRole?.opportunity_id || normalizedRoles[0]?.opportunity_id || '';
+        });
       } catch (caughtError) {
-        if (controller.signal.aborted) {
+        if (options?.signal?.aborted) {
           return;
         }
 
@@ -945,19 +1201,25 @@ export default function HomePage() {
             ? caughtError.message
             : 'Failed to load job opportunities.'
         );
+        throw caughtError;
       } finally {
-        if (!controller.signal.aborted) {
+        if (!options?.signal?.aborted) {
           setIsJobLoading(false);
         }
       }
-    }
+    },
+    []
+  );
 
-    void loadJobHuntRoles();
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void loadJobHuntRoles({ signal: controller.signal }).catch(() => {});
 
     return () => {
       controller.abort();
     };
-  }, []);
+  }, [loadJobHuntRoles]);
 
   useEffect(() => {
     if (!selectedJobRoleId) {
@@ -996,6 +1258,21 @@ export default function HomePage() {
       window.clearTimeout(timeout);
     };
   }, [jobSaveSuccess, saveSuccess, supportSaveSuccess]);
+
+  useEffect(() => {
+    if (!jobDiscoverySuccess && !jobDiscoveryError) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setJobDiscoverySuccess('');
+      setJobDiscoveryError('');
+    }, 4000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [jobDiscoveryError, jobDiscoverySuccess]);
 
   useEffect(() => {
     setTodayIsoDate(new Date().toISOString().slice(0, 10));
@@ -1214,6 +1491,53 @@ export default function HomePage() {
       );
     } finally {
       setIsJobSaving(false);
+    }
+  }
+
+  async function handleFetchJobListings() {
+    if (jobDirty && !window.confirm('Discard unsaved Job Hunt draft changes and refresh listings?')) {
+      return;
+    }
+
+    setIsJobDiscoveryRunning(true);
+    setJobDiscoveryError('');
+    setJobDiscoverySuccess('');
+
+    try {
+      const response = await fetch('/api/job-hunt/discovery', {
+        method: 'POST',
+        cache: 'no-store'
+      });
+
+      const payload = (await response.json()) as JobHuntDiscoveryResponse;
+
+      if (!response.ok || !payload.success || !payload.run) {
+        throw new Error(payload.error || 'Failed to fetch new listings.');
+      }
+
+      await loadJobHuntRoles({ preferredRoleId: selectedJobRoleId });
+
+      const appendedSummary =
+        typeof payload.run.appendedCount === 'number'
+          ? ` Appended ${payload.run.appendedCount}.`
+          : '';
+      const updatedSummary =
+        typeof payload.run.updatedCount === 'number'
+          ? ` Updated ${payload.run.updatedCount}.`
+          : '';
+
+      setJobDiscoverySuccess(
+        `Fetched latest job listings. Selected ${payload.run.selectedCount}.${appendedSummary}${updatedSummary}`
+      );
+      setJobDirty(false);
+    } catch (caughtError) {
+      setJobDiscoveryError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : 'Failed to fetch new listings.'
+      );
+    } finally {
+      setIsJobDiscoveryRunning(false);
     }
   }
 
@@ -2323,53 +2647,64 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_16rem]">
-                  <label className="flex flex-col gap-1 text-sm text-neutral-700 dark:text-neutral-300">
-                    <span className="font-medium">Search</span>
-                    <input
-                      type="text"
-                      value={jobSearchTerm}
-                      onChange={(event) => setJobSearchTerm(event.target.value)}
-                      placeholder="Company, role, or lane"
-                      className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                    />
-                  </label>
+                <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_16rem] xl:flex-1">
+                    <label className="flex flex-col gap-1 text-sm text-neutral-700 dark:text-neutral-300">
+                      <span className="font-medium">Search</span>
+                      <input
+                        type="text"
+                        value={jobSearchTerm}
+                        onChange={(event) => setJobSearchTerm(event.target.value)}
+                        placeholder="Company, role, or lane"
+                        className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                      />
+                    </label>
 
-                  <label className="flex flex-col gap-1 text-sm text-neutral-700 dark:text-neutral-300">
-                    <span className="font-medium">Status</span>
-                    <select
-                      value={jobStatusFilter}
-                      onChange={(event) =>
-                        setJobStatusFilter(event.target.value as JobHuntFilterValue)
-                      }
-                      className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                    >
-                      <option value="all">All statuses</option>
-                      {JOB_HUNT_STATUSES.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                    <label className="flex flex-col gap-1 text-sm text-neutral-700 dark:text-neutral-300">
+                      <span className="font-medium">Status</span>
+                      <select
+                        value={jobStatusFilter}
+                        onChange={(event) =>
+                          setJobStatusFilter(event.target.value as JobHuntFilterValue)
+                        }
+                        className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                      >
+                        <option value="all">All statuses</option>
+                        {JOB_HUNT_STATUSES.map((status) => (
+                          <option key={status} value={status}>
+                            {status}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
 
-                  <label className="flex flex-col gap-1 text-sm text-neutral-700 dark:text-neutral-300">
-                    <span className="font-medium">Role lane</span>
-                    <select
-                      value={jobLaneFilter}
-                      onChange={(event) =>
-                        setJobLaneFilter(event.target.value as JobHuntLaneFilterValue)
-                      }
-                      className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                    >
-                      <option value="all">All lanes</option>
-                      {JOB_HUNT_LANES.map((lane) => (
-                        <option key={lane} value={lane}>
-                          {lane}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                    <label className="flex flex-col gap-1 text-sm text-neutral-700 dark:text-neutral-300">
+                      <span className="font-medium">Role lane</span>
+                      <select
+                        value={jobLaneFilter}
+                        onChange={(event) =>
+                          setJobLaneFilter(event.target.value as JobHuntLaneFilterValue)
+                        }
+                        className="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                      >
+                        <option value="all">All lanes</option>
+                        {JOB_HUNT_LANES.map((lane) => (
+                          <option key={lane} value={lane}>
+                            {lane}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleFetchJobListings}
+                    disabled={isJobDiscoveryRunning}
+                    className="rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-900 transition hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-900"
+                  >
+                    {isJobDiscoveryRunning ? 'Fetching...' : 'Fetch New Listings'}
+                  </button>
                 </div>
 
                 <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">
@@ -2386,6 +2721,18 @@ export default function HomePage() {
                 {jobLoadError ? (
                   <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
                     {jobLoadError}
+                  </div>
+                ) : null}
+
+                {jobDiscoverySuccess ? (
+                  <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    {jobDiscoverySuccess}
+                  </div>
+                ) : null}
+
+                {jobDiscoveryError ? (
+                  <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+                    {jobDiscoveryError}
                   </div>
                 ) : null}
               </div>
