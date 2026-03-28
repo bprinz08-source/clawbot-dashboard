@@ -91,11 +91,17 @@ Why:
 ---
 
 ## Relationship to next milestone
-The next backend milestone remains:
+The current backend milestone is now:
 
-staging row -> import script -> live `documents` row -> visible in app
+staging row -> product/manual promotion -> linked live records -> visible in existing app surfaces
 
-Once that works, the dashboard can gain:
+Specifically:
+- staged evidence can promote into `product_instances`
+- staged evidence can promote into `project_manuals`
+- manuals can be linked to products
+- staging now records import outcome via import-state fields
+
+Once that works reliably at scale, the dashboard can gain:
 - import action
 - review status edits
 - later queue tooling
