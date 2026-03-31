@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { ManualLinkSearch } from '@/app/admin/intake/[runId]/manual-link-search';
 import {
   parseCsvEvidenceAction,
   promoteSafeProductsAction
@@ -30,7 +31,8 @@ const ITEM_COLUMNS: Array<{
     | 'original_file_hash'
     | 'import_target_type'
     | 'import_target_id'
-    | 'imported_at';
+    | 'imported_at'
+    | 'actions';
   label: string;
 }> = [
   { key: 'source_file_name', label: 'Source File' },
@@ -47,7 +49,8 @@ const ITEM_COLUMNS: Array<{
   { key: 'original_file_hash', label: 'File Hash' },
   { key: 'import_target_type', label: 'Target Type' },
   { key: 'import_target_id', label: 'Target ID' },
-  { key: 'imported_at', label: 'Imported At' }
+  { key: 'imported_at', label: 'Imported At' },
+  { key: 'actions', label: 'Actions' }
 ];
 
 function runStatusPillClass(status: string) {
@@ -103,6 +106,22 @@ function isSafePromotableItem(item: Record<string, unknown>) {
     title.toLowerCase() !== 'master shower' &&
     !importedAt &&
     !importTargetId
+  );
+}
+
+function canFindManualLinks(item: Record<string, unknown>) {
+  const importTargetType = typeof item.import_target_type === 'string' ? item.import_target_type.trim() : '';
+  const importTargetId = typeof item.import_target_id === 'string' ? item.import_target_id.trim() : '';
+  const title = typeof item.title === 'string' ? item.title.trim() : '';
+  const brand = typeof item.brand === 'string' ? item.brand.trim() : '';
+  const modelNumber = typeof item.model_number === 'string' ? item.model_number.trim() : '';
+
+  return (
+    importTargetType === 'product_instance' &&
+    Boolean(importTargetId) &&
+    Boolean(title) &&
+    Boolean(brand) &&
+    Boolean(modelNumber)
   );
 }
 
@@ -313,7 +332,11 @@ export default async function IntakeRunDetailPage({
                         </td>
                         {ITEM_COLUMNS.map((column) => (
                           <td key={column.key} className="px-4 py-3 text-neutral-700">
-                            {column.key === 'room_match_confidence'
+                            {column.key === 'actions'
+                              ? canFindManualLinks(item as Record<string, unknown>)
+                                ? <ManualLinkSearch intakeItemId={item.id} />
+                                : '—'
+                              : column.key === 'room_match_confidence'
                               ? formatConfidence(item.room_match_confidence)
                               : column.key === 'imported_at'
                                 ? formatDateTime(item.imported_at)

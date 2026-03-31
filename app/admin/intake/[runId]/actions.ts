@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { redirect, unstable_rethrow } from 'next/navigation';
+import type { ManualLinkSearchState } from '@/app/admin/intake/[runId]/manual-link-search-state';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,6 +24,22 @@ type PromoteSafeProductsSummary = {
   linked_to_existing_product_instances: number;
   staged_rows_imported: number;
   skipped_rows: number;
+};
+
+type ManualLinkSearchSummary = {
+  product: {
+    brand: string;
+    category: string;
+    model: string;
+    title: string;
+  };
+  queries: string[];
+  candidates: Array<{
+    query: string;
+    source_label: string;
+    title: string;
+    url: string;
+  }>;
 };
 
 function getString(formData: FormData, key: string) {
@@ -96,5 +113,50 @@ export async function promoteSafeProductsAction(formData: FormData) {
       error instanceof Error ? error.message : 'Failed to promote safe staged products.';
 
     redirect(`/admin/intake/${runId}?error=${encodeURIComponent(message)}`);
+  }
+}
+
+export async function findManualLinksAction(
+  _previousState: ManualLinkSearchState,
+  formData: FormData
+): Promise<ManualLinkSearchState> {
+  const intakeItemId = getString(formData, 'intake_item_id');
+
+  if (!intakeItemId) {
+    return {
+      error: 'Missing intake item id.',
+      product: null,
+      queries: [],
+      candidates: []
+    };
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      'python3',
+      [join(process.cwd(), 'scripts', 'find_manual_links_for_intake_item.py'), intakeItemId],
+      {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024
+      }
+    );
+
+    const summary = JSON.parse(stdout) as ManualLinkSearchSummary;
+
+    return {
+      error: null,
+      product: summary.product,
+      queries: summary.queries,
+      candidates: summary.candidates
+    };
+  } catch (error) {
+    unstable_rethrow(error);
+
+    return {
+      error: error instanceof Error ? error.message : 'Failed to find manual links.',
+      product: null,
+      queries: [],
+      candidates: []
+    };
   }
 }
