@@ -1,6 +1,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { parseCsvEvidenceAction } from '@/app/admin/intake/[runId]/actions';
+import {
+  parseCsvEvidenceAction,
+  promoteSafeProductsAction
+} from '@/app/admin/intake/[runId]/actions';
 import {
   formatCell,
   formatConfidence,
@@ -80,6 +83,29 @@ function isCsvSourceItem(item: Record<string, unknown>) {
   );
 }
 
+function isSafePromotableItem(item: Record<string, unknown>) {
+  const itemKind = typeof item.item_kind === 'string' ? item.item_kind : '';
+  const reviewStatus = typeof item.review_status === 'string' ? item.review_status : '';
+  const proposedCategory = typeof item.proposed_category === 'string' ? item.proposed_category.trim() : '';
+  const brand = typeof item.brand === 'string' ? item.brand.trim() : '';
+  const modelNumber = typeof item.model_number === 'string' ? item.model_number.trim() : '';
+  const title = typeof item.title === 'string' ? item.title.trim() : '';
+  const importedAt = typeof item.imported_at === 'string' ? item.imported_at.trim() : '';
+  const importTargetId = typeof item.import_target_id === 'string' ? item.import_target_id.trim() : '';
+
+  return (
+    itemKind === 'other' &&
+    reviewStatus === 'unreviewed' &&
+    Boolean(proposedCategory) &&
+    Boolean(brand) &&
+    Boolean(modelNumber) &&
+    Boolean(title) &&
+    title.toLowerCase() !== 'master shower' &&
+    !importedAt &&
+    !importTargetId
+  );
+}
+
 export default async function IntakeRunDetailPage({
   params,
   searchParams
@@ -98,6 +124,7 @@ export default async function IntakeRunDetailPage({
   const importedCount = items.filter(isImportedItem).length;
   const unresolvedCount = items.length - importedCount;
   const csvSourceItem = items.find((item) => isCsvSourceItem(item as Record<string, unknown>));
+  const hasSafePromotableItems = items.some((item) => isSafePromotableItem(item as Record<string, unknown>));
 
   return (
     <main className="min-h-screen bg-neutral-100 px-4 py-8 text-neutral-950">
@@ -197,19 +224,32 @@ export default async function IntakeRunDetailPage({
               <div className="space-y-1">
                 <h2 className="text-lg font-semibold text-neutral-950">Processing</h2>
                 <p className="text-sm text-neutral-600">
-                  Parse the uploaded CSV evidence into staged durable-product candidates only.
+                  Run the next controlled dashboard steps without leaving the intake inspector.
                 </p>
               </div>
-              <form action={parseCsvEvidenceAction}>
-                <input type="hidden" name="run_id" value={run.id} />
-                <input type="hidden" name="source_intake_item_id" value={csvSourceItem.id} />
-                <button
-                  type="submit"
-                  className="inline-flex items-center justify-center rounded-lg border border-neutral-900 bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-800"
-                >
-                  Parse CSV
-                </button>
-              </form>
+              <div className="flex flex-wrap gap-3">
+                <form action={parseCsvEvidenceAction}>
+                  <input type="hidden" name="run_id" value={run.id} />
+                  <input type="hidden" name="source_intake_item_id" value={csvSourceItem.id} />
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center rounded-lg border border-neutral-900 bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-800"
+                  >
+                    Parse CSV
+                  </button>
+                </form>
+                {hasSafePromotableItems ? (
+                  <form action={promoteSafeProductsAction}>
+                    <input type="hidden" name="run_id" value={run.id} />
+                    <button
+                      type="submit"
+                      className="inline-flex items-center justify-center rounded-lg border border-neutral-900 bg-white px-4 py-2 text-sm font-medium text-neutral-900 transition hover:bg-neutral-50"
+                    >
+                      Promote Safe Products
+                    </button>
+                  </form>
+                ) : null}
+              </div>
             </div>
           </section>
         ) : null}
