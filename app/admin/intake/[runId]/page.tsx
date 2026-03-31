@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { DownloadStoreManualButton } from '@/app/admin/intake/[runId]/download-store-manual-button';
 import { ManualLinkSearch } from '@/app/admin/intake/[runId]/manual-link-search';
 import {
   parseCsvEvidenceAction,
@@ -122,6 +123,21 @@ function canFindManualLinks(item: Record<string, unknown>) {
     Boolean(title) &&
     Boolean(brand) &&
     Boolean(modelNumber)
+  );
+}
+
+function canDownloadStoreManual(item: Record<string, unknown>) {
+  const proposedDocumentType = typeof item.proposed_document_type === 'string' ? item.proposed_document_type.trim() : '';
+  const proposedProductInstanceId =
+    typeof item.proposed_product_instance_id === 'string' ? item.proposed_product_instance_id.trim() : '';
+  const sourcePath = typeof item.source_path === 'string' ? item.source_path.trim() : '';
+  const importTargetType = typeof item.import_target_type === 'string' ? item.import_target_type.trim() : '';
+
+  return (
+    proposedDocumentType === 'manual' &&
+    Boolean(proposedProductInstanceId) &&
+    sourcePath.startsWith('http') &&
+    importTargetType !== 'project_manual'
   );
 }
 
@@ -335,7 +351,9 @@ export default async function IntakeRunDetailPage({
                             {column.key === 'actions'
                               ? canFindManualLinks(item as Record<string, unknown>)
                                 ? <ManualLinkSearch intakeItemId={item.id} />
-                                : '—'
+                                : canDownloadStoreManual(item as Record<string, unknown>)
+                                  ? <DownloadStoreManualButton intakeItemId={item.id} />
+                                  : '—'
                               : column.key === 'room_match_confidence'
                               ? formatConfidence(item.room_match_confidence)
                               : column.key === 'imported_at'

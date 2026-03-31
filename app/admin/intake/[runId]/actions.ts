@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { redirect, unstable_rethrow } from 'next/navigation';
 import type {
+  DownloadStoreManualResult,
   ManualLinkSearchState,
   ManualLinkStageResult
 } from '@/app/admin/intake/[runId]/manual-link-search-state';
@@ -54,6 +55,16 @@ type StageManualLinkSummary = {
   proposed_product_instance_id: string;
   source_file_name: string;
   source_path: string;
+};
+
+type DownloadStoreManualSummary = {
+  status: 'created' | 'updated' | 'already_imported';
+  intake_item_id: string;
+  project_manual_id: string;
+  file_path: string;
+  file_name: string;
+  mime_type?: string;
+  file_size_bytes?: number;
 };
 
 function getString(formData: FormData, key: string) {
@@ -232,6 +243,63 @@ export async function stageManualLinkAction(
       intake_item_id: null,
       intake_run_id: null,
       message: null
+    };
+  }
+}
+
+export async function downloadStoreManualAction(
+  _previousState: DownloadStoreManualResult,
+  formData: FormData
+): Promise<DownloadStoreManualResult> {
+  const intakeItemId = getString(formData, 'intake_item_id');
+
+  if (!intakeItemId) {
+    return {
+      error: 'Missing intake item id.',
+      file_name: null,
+      file_path: null,
+      message: null,
+      project_manual_id: null,
+      status: null
+    };
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      'python3',
+      [join(process.cwd(), 'scripts', 'download_and_store_manual.py'), intakeItemId],
+      {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024 * 10
+      }
+    );
+
+    const summary = JSON.parse(stdout) as DownloadStoreManualSummary;
+    const verb =
+      summary.status === 'created'
+        ? 'Created'
+        : summary.status === 'updated'
+          ? 'Updated'
+          : 'Already imported';
+
+    return {
+      error: null,
+      file_name: summary.file_name,
+      file_path: summary.file_path,
+      message: `${verb} live project manual ${summary.project_manual_id}.`,
+      project_manual_id: summary.project_manual_id,
+      status: summary.status
+    };
+  } catch (error) {
+    unstable_rethrow(error);
+
+    return {
+      error: error instanceof Error ? error.message : 'Failed to download and store manual.',
+      file_name: null,
+      file_path: null,
+      message: null,
+      project_manual_id: null,
+      status: null
     };
   }
 }

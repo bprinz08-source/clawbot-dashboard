@@ -13,6 +13,15 @@ export type ManualLinkStageResult = {
   message: string | null;
 };
 
+export type DownloadStoreManualResult = {
+  error: string | null;
+  file_name: string | null;
+  file_path: string | null;
+  message: string | null;
+  project_manual_id: string | null;
+  status: 'created' | 'updated' | 'already_imported' | null;
+};
+
 export type ManualLinkSearchState = {
   error: string | null;
   product: {
@@ -38,4 +47,13 @@ export const initialManualLinkStageResult: ManualLinkStageResult = {
   intake_item_id: null,
   intake_run_id: null,
   message: null
+};
+
+export const initialDownloadStoreManualResult: DownloadStoreManualResult = {
+  error: null,
+  file_name: null,
+  file_path: null,
+  message: null,
+  project_manual_id: null,
+  status: null
 };
