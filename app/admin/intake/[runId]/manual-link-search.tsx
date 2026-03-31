@@ -2,6 +2,7 @@
 
 import { useActionState } from 'react';
 import { findManualLinksAction } from '@/app/admin/intake/[runId]/actions';
+import { ManualLinkStageButton } from '@/app/admin/intake/[runId]/manual-link-stage-button';
 import {
   initialManualLinkSearchState,
   type ManualLinkSearchState
@@ -72,6 +73,7 @@ export function ManualLinkSearch({ intakeItemId }: ManualLinkSearchProps) {
                     </a>
                     <p>{candidate.source_label}</p>
                     <p>{candidate.query}</p>
+                    <ManualLinkStageButton intakeItemId={intakeItemId} candidate={candidate} />
                   </li>
                 ))}
               </ul>

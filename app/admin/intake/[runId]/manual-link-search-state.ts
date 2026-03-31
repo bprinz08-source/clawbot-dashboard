@@ -5,6 +5,14 @@ export type ManualLinkCandidate = {
   url: string;
 };
 
+export type ManualLinkStageResult = {
+  created: boolean;
+  error: string | null;
+  intake_item_id: string | null;
+  intake_run_id: string | null;
+  message: string | null;
+};
+
 export type ManualLinkSearchState = {
   error: string | null;
   product: {
@@ -22,4 +30,12 @@ export const initialManualLinkSearchState: ManualLinkSearchState = {
   product: null,
   queries: [],
   candidates: []
+};
+
+export const initialManualLinkStageResult: ManualLinkStageResult = {
+  created: false,
+  error: null,
+  intake_item_id: null,
+  intake_run_id: null,
+  message: null
 };

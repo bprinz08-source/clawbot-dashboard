@@ -4,7 +4,10 @@ import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { redirect, unstable_rethrow } from 'next/navigation';
-import type { ManualLinkSearchState } from '@/app/admin/intake/[runId]/manual-link-search-state';
+import type {
+  ManualLinkSearchState,
+  ManualLinkStageResult
+} from '@/app/admin/intake/[runId]/manual-link-search-state';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +30,8 @@ type PromoteSafeProductsSummary = {
 };
 
 type ManualLinkSearchSummary = {
+  intake_item_id: string;
+  product_instance_id: string;
   product: {
     brand: string;
     category: string;
@@ -40,6 +45,15 @@ type ManualLinkSearchSummary = {
     title: string;
     url: string;
   }>;
+};
+
+type StageManualLinkSummary = {
+  created: boolean;
+  intake_run_id: string;
+  intake_item_id: string;
+  proposed_product_instance_id: string;
+  source_file_name: string;
+  source_path: string;
 };
 
 function getString(formData: FormData, key: string) {
@@ -157,6 +171,67 @@ export async function findManualLinksAction(
       product: null,
       queries: [],
       candidates: []
+    };
+  }
+}
+
+export async function stageManualLinkAction(
+  _previousState: ManualLinkStageResult,
+  formData: FormData
+): Promise<ManualLinkStageResult> {
+  const intakeItemId = getString(formData, 'intake_item_id');
+  const candidateUrl = getString(formData, 'candidate_url');
+  const candidateTitle = getString(formData, 'candidate_title');
+  const sourceLabel = getString(formData, 'source_label');
+  const query = getString(formData, 'query');
+
+  if (!intakeItemId || !candidateUrl || !candidateTitle) {
+    return {
+      created: false,
+      error: 'Missing manual link staging inputs.',
+      intake_item_id: null,
+      intake_run_id: null,
+      message: null
+    };
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      'python3',
+      [
+        join(process.cwd(), 'scripts', 'stage_selected_manual_link.py'),
+        intakeItemId,
+        candidateUrl,
+        candidateTitle,
+        sourceLabel,
+        query
+      ],
+      {
+        cwd: process.cwd(),
+        maxBuffer: 1024 * 1024
+      }
+    );
+
+    const summary = JSON.parse(stdout) as StageManualLinkSummary;
+
+    return {
+      created: summary.created,
+      error: null,
+      intake_item_id: summary.intake_item_id,
+      intake_run_id: summary.intake_run_id,
+      message: summary.created
+        ? `Staged manual link in intake run ${summary.intake_run_id}.`
+        : `Existing staged manual link found in intake run ${summary.intake_run_id}.`
+    };
+  } catch (error) {
+    unstable_rethrow(error);
+
+    return {
+      created: false,
+      error: error instanceof Error ? error.message : 'Failed to stage manual link.',
+      intake_item_id: null,
+      intake_run_id: null,
+      message: null
     };
   }
 }
