@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { parseCsvEvidenceAction } from '@/app/admin/intake/[runId]/actions';
 import {
   formatCell,
   formatConfidence,
@@ -67,12 +68,27 @@ function itemToneClass(isImported: boolean) {
     : 'bg-amber-50/70';
 }
 
+function isCsvSourceItem(item: Record<string, unknown>) {
+  const sourceFileName = typeof item.source_file_name === 'string' ? item.source_file_name.toLowerCase() : '';
+  const mimeType = typeof item.mime_type === 'string' ? item.mime_type.toLowerCase() : '';
+  const storagePath = typeof item.storage_path === 'string' ? item.storage_path.toLowerCase() : '';
+
+  return Boolean(storagePath) && (
+    sourceFileName.endsWith('.csv') ||
+    mimeType.includes('csv') ||
+    storagePath.endsWith('.csv')
+  );
+}
+
 export default async function IntakeRunDetailPage({
-  params
+  params,
+  searchParams
 }: {
   params: Promise<{ runId: string }>;
+  searchParams: Promise<{ error?: string; message?: string }>;
 }) {
   const { runId } = await params;
+  const { error: actionError, message } = await searchParams;
   const { run, items, error } = await getIntakeRunDetail(runId);
 
   if (!run && !error) {
@@ -81,6 +97,7 @@ export default async function IntakeRunDetailPage({
 
   const importedCount = items.filter(isImportedItem).length;
   const unresolvedCount = items.length - importedCount;
+  const csvSourceItem = items.find((item) => isCsvSourceItem(item as Record<string, unknown>));
 
   return (
     <main className="min-h-screen bg-neutral-100 px-4 py-8 text-neutral-950">
@@ -100,6 +117,18 @@ export default async function IntakeRunDetailPage({
         {error ? (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
+          </div>
+        ) : null}
+
+        {actionError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {actionError}
+          </div>
+        ) : null}
+
+        {message ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {message}
           </div>
         ) : null}
 
@@ -158,6 +187,29 @@ export default async function IntakeRunDetailPage({
                   <p className="mt-2 text-sm text-neutral-900">{formatDateTime(run.updated_at)}</p>
                 </div>
               </div>
+            </div>
+          </section>
+        ) : null}
+
+        {run && csvSourceItem ? (
+          <section className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold text-neutral-950">Processing</h2>
+                <p className="text-sm text-neutral-600">
+                  Parse the uploaded CSV evidence into staged durable-product candidates only.
+                </p>
+              </div>
+              <form action={parseCsvEvidenceAction}>
+                <input type="hidden" name="run_id" value={run.id} />
+                <input type="hidden" name="source_intake_item_id" value={csvSourceItem.id} />
+                <button
+                  type="submit"
+                  className="inline-flex items-center justify-center rounded-lg border border-neutral-900 bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-800"
+                >
+                  Parse CSV
+                </button>
+              </form>
             </div>
           </section>
         ) : null}
