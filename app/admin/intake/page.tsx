@@ -25,14 +25,23 @@ export default async function IntakeRunsPage() {
     <main className="min-h-screen bg-neutral-100 px-4 py-8 text-neutral-950">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <header className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium uppercase tracking-[0.18em] text-neutral-500">
-              Admin Intake
-            </p>
-            <h1 className="text-3xl font-semibold text-neutral-950">Intake Inspector</h1>
-            <p className="max-w-3xl text-sm text-neutral-600">
-              Read-only visibility into staged intake runs and import progress.
-            </p>
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium uppercase tracking-[0.18em] text-neutral-500">
+                Admin Intake
+              </p>
+              <h1 className="text-3xl font-semibold text-neutral-950">Intake Inspector</h1>
+              <p className="max-w-3xl text-sm text-neutral-600">
+                Read-only visibility into staged intake runs and import progress.
+              </p>
+            </div>
+
+            <Link
+              href="/admin/intake/new"
+              className="inline-flex items-center justify-center rounded-lg border border-neutral-900 bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-800"
+            >
+              New Intake Submission
+            </Link>
           </div>
         </header>
 

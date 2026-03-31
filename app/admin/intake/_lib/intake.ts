@@ -1,6 +1,9 @@
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
+const INTAKE_STAGING_BUCKET = 'intake-staging' as const;
+const DEFAULT_INTAKE_RUN_SOURCE_TYPE = 'manual_operator_upload' as const;
+
 export type IntakeRunRecord = {
   id: string;
   source_label: string;
@@ -46,6 +49,38 @@ export type IntakeRunDetail = {
   run: IntakeRunRecord | null;
   items: IntakeItemRecord[];
   error: string | null;
+};
+
+export type ProjectRecord = {
+  id: string;
+  name: string;
+  status: string;
+  updated_at: string;
+};
+
+type CreateIntakeRunInput = {
+  projectId: string;
+  sourceLabel: string;
+  builderName?: string;
+  sourceIdentifier?: string;
+  notes?: string;
+};
+
+type CreateIntakeRunResult = {
+  id: string;
+};
+
+type CreateIntakeItemInput = {
+  intakeRunId: string;
+  sourceFileName: string;
+  storagePath: string;
+  mimeType: string;
+  fileSizeBytes: number | null;
+  itemKind: string;
+};
+
+type CreateIntakeItemResult = {
+  id: string;
 };
 
 type SupabaseConfig = {
@@ -111,6 +146,151 @@ async function fetchSupabaseRows(
   }
 
   return payload.filter((row): row is Record<string, unknown> => Boolean(row));
+}
+
+async function insertSupabaseRow<TResponse extends Record<string, unknown>>(
+  table: string,
+  payload: Record<string, unknown>
+): Promise<TResponse> {
+  const config = getSupabaseConfig();
+
+  if (!config) {
+    throw new Error('Missing Supabase credentials. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+  }
+
+  const url = new URL(`/rest/v1/${table}`, config.url);
+  url.searchParams.set('select', '*');
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation'
+    },
+    body: JSON.stringify(payload),
+    cache: 'no-store'
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Supabase ${table} insert failed (${response.status}): ${errorBody}`);
+  }
+
+  const rows = (await response.json()) as unknown;
+
+  if (!Array.isArray(rows) || !rows[0] || typeof rows[0] !== 'object') {
+    throw new Error(`Unexpected Supabase response for ${table} insert.`);
+  }
+
+  return rows[0] as TResponse;
+}
+
+async function ensureIntakeStagingBucket() {
+  const config = getSupabaseConfig();
+
+  if (!config) {
+    throw new Error('Missing Supabase credentials. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+  }
+
+  const listResponse = await fetch(new URL('/storage/v1/bucket', config.url), {
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`
+    },
+    cache: 'no-store'
+  });
+
+  if (!listResponse.ok) {
+    const errorBody = await listResponse.text();
+    throw new Error(`Supabase storage bucket query failed (${listResponse.status}): ${errorBody}`);
+  }
+
+  const buckets = (await listResponse.json()) as Array<{ id?: unknown }> | unknown;
+
+  if (Array.isArray(buckets) && buckets.some((bucket) => bucket?.id === INTAKE_STAGING_BUCKET)) {
+    return;
+  }
+
+  const createResponse = await fetch(new URL('/storage/v1/bucket', config.url), {
+    method: 'POST',
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      id: INTAKE_STAGING_BUCKET,
+      name: INTAKE_STAGING_BUCKET,
+      public: false
+    }),
+    cache: 'no-store'
+  });
+
+  if (createResponse.ok || createResponse.status === 409) {
+    return;
+  }
+
+  const errorBody = await createResponse.text();
+  throw new Error(`Supabase storage bucket create failed (${createResponse.status}): ${errorBody}`);
+}
+
+function sanitizeFileName(fileName: string) {
+  const trimmedName = fileName.trim();
+
+  if (!trimmedName) {
+    return 'upload';
+  }
+
+  return trimmedName.replace(/[^a-zA-Z0-9._-]+/g, '-');
+}
+
+async function uploadFileToIntakeStaging(file: File, projectId: string) {
+  const config = getSupabaseConfig();
+
+  if (!config) {
+    throw new Error('Missing Supabase credentials. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+  }
+
+  await ensureIntakeStagingBucket();
+
+  const storagePath = [
+    projectId,
+    new Date().toISOString().slice(0, 10),
+    `${crypto.randomUUID()}-${sanitizeFileName(file.name)}`
+  ].join('/');
+
+  const uploadResponse = await fetch(
+    new URL(`/storage/v1/object/${INTAKE_STAGING_BUCKET}/${storagePath}`, config.url),
+    {
+      method: 'POST',
+      headers: {
+        apikey: config.serviceRoleKey,
+        Authorization: `Bearer ${config.serviceRoleKey}`,
+        'Content-Type': file.type || 'application/octet-stream',
+        'x-upsert': 'false'
+      },
+      body: Buffer.from(await file.arrayBuffer()),
+      cache: 'no-store'
+    }
+  );
+
+  if (!uploadResponse.ok) {
+    const errorBody = await uploadResponse.text();
+    throw new Error(`Supabase storage upload failed (${uploadResponse.status}): ${errorBody}`);
+  }
+
+  return `${INTAKE_STAGING_BUCKET}/${storagePath}`;
+}
+
+function mapProjectRecord(row: Record<string, unknown>): ProjectRecord {
+  return {
+    id: normalizeString(row.id),
+    name: normalizeString(row.name),
+    status: normalizeString(row.status),
+    updated_at: normalizeString(row.updated_at)
+  };
 }
 
 function mapRunRecord(row: Record<string, unknown>): IntakeRunRecord {
@@ -219,6 +399,82 @@ export async function getIntakeRuns(): Promise<{
       error: message
     };
   }
+}
+
+export async function getProjects(): Promise<{
+  projects: ProjectRecord[];
+  error: string | null;
+}> {
+  try {
+    const projectRows = await fetchSupabaseRows('projects', {
+      select: 'id,name,status,updated_at',
+      order: 'name.asc',
+      limit: '500'
+    });
+
+    return {
+      projects: projectRows.map(mapProjectRecord).filter((project) => project.id && project.name),
+      error: null
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load projects.';
+
+    return {
+      projects: [],
+      error: message
+    };
+  }
+}
+
+export async function getProjectById(projectId: string): Promise<ProjectRecord | null> {
+  if (!projectId.trim()) {
+    return null;
+  }
+
+  const projectRows = await fetchSupabaseRows('projects', {
+    select: 'id,name,status,updated_at',
+    id: `eq.${projectId}`,
+    limit: '1'
+  });
+
+  return projectRows[0] ? mapProjectRecord(projectRows[0]) : null;
+}
+
+export async function createIntakeRun(input: CreateIntakeRunInput): Promise<CreateIntakeRunResult> {
+  const insertedRun = await insertSupabaseRow<CreateIntakeRunResult>('intake_runs', {
+    project_id: input.projectId,
+    source_type: DEFAULT_INTAKE_RUN_SOURCE_TYPE,
+    source_label: input.sourceLabel,
+    builder_name: input.builderName || null,
+    source_identifier: input.sourceIdentifier || null,
+    notes: input.notes || null,
+    status: 'pending'
+  });
+
+  return {
+    id: normalizeString(insertedRun.id)
+  };
+}
+
+export async function createIntakeItem(input: CreateIntakeItemInput): Promise<CreateIntakeItemResult> {
+  const insertedItem = await insertSupabaseRow<CreateIntakeItemResult>('intake_items', {
+    intake_run_id: input.intakeRunId,
+    source_file_name: input.sourceFileName,
+    storage_path: input.storagePath,
+    mime_type: input.mimeType || null,
+    file_size_bytes: input.fileSizeBytes,
+    item_kind: input.itemKind,
+    needs_review: true,
+    review_status: 'unreviewed'
+  });
+
+  return {
+    id: normalizeString(insertedItem.id)
+  };
+}
+
+export async function stageIntakeEvidenceUpload(file: File, projectId: string) {
+  return uploadFileToIntakeStaging(file, projectId);
 }
 
 export async function getIntakeRunDetail(runId: string): Promise<IntakeRunDetail> {
