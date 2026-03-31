@@ -2,11 +2,9 @@
 
 import { useActionState, useState } from 'react';
 import type { ProjectRecord } from '@/app/admin/intake/_lib/intake';
-import {
-  initialIntakeSubmissionState,
-  submitIntakeRun
-} from '@/app/admin/intake/new/actions';
+import { submitIntakeRun } from '@/app/admin/intake/new/actions';
 import { FileInput } from '@/app/admin/intake/new/file-input';
+import { initialIntakeSubmissionState } from '@/app/admin/intake/new/form-state';
 import { ProjectPicker } from '@/app/admin/intake/new/project-picker';
 import {
   MAX_INTAKE_EVIDENCE_FILE_SIZE_BYTES,

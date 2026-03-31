@@ -7,15 +7,8 @@ import {
   getProjectById,
   stageIntakeEvidenceUpload
 } from '@/app/admin/intake/_lib/intake';
+import type { IntakeSubmissionState } from '@/app/admin/intake/new/form-state';
 import { MAX_INTAKE_EVIDENCE_FILE_SIZE_BYTES } from '@/app/admin/intake/new/upload-config';
-
-export type IntakeSubmissionState = {
-  error: string | null;
-};
-
-export const initialIntakeSubmissionState: IntakeSubmissionState = {
-  error: null
-};
 
 function getTrimmedString(formData: FormData, key: string) {
   const value = formData.get(key);
